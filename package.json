@@ -1,0 +1,20 @@
+{
+  "name": "@local/dsh-image",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Image generation for DeepSeek Harness through an OpenAI-compatible relay (ykh.ai / gpt-image-2), exposed as both a slash command and an agent tool.",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "meta": {
+    "title": "Image Generation (ykh.ai)",
+    "description": "Generate images from /image or the generate_image tool. Saves into the workspace; the API key stays in DSH's credential store."
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

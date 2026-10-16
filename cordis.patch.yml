@@ -1,0 +1,5 @@
+# dsh-image bundle: inserts the image-generation plugin into a profile's layer stack.
+- insert:
+    - id: dsh-image
+      name: '@local/dsh-image'
+      config: {}
