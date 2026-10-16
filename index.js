@@ -6,26 +6,23 @@
  * call `generate()` below. There is deliberately no second copy of the logic.
  *
  * ---------------------------------------------------------------------------
- * SCOPE NOTE — this file used to be silently dead because the two services live
- * in different scopes, so it is worth stating plainly:
+ * LOADING NOTES — two traps this plugin hit, both silent:
  *
- *   `commands` is ROOT-scoped. `@deepseek-ai/dsh-command-compact` sits at the
- *   profile root and injects `["commands", "compaction"]`.
+ * 1. `main`. Every working bundle in this profile (`dsh-context`, `dshmarket`,
+ *    `@dsh-pet/bridge`) declares a top-level `main`. The host reads package
+ *    manifests itself (`readPackageManifest`) rather than relying on Node's
+ *    `exports` resolution, so a package carrying only `exports` never resolves
+ *    to an entry and the plugin is never applied. `package.json` sets `main`.
  *
- *   `tools` is AGENT-scoped. Every shipped tool row (`dsh-tool-present`,
- *   `dsh-tool-ask-user`, …) is nested inside the agent preset's group, and the
- *   root-level `tool-plugin-manager` row is hard-`disabled: true` while its
- *   agent-group twin is the enabled one.
- *
- * `@deepseek-ai/dsh-base/cordis.patch.yml` states the rule: "Row order carries
- * no load semantics (activation is service-availability driven)". A root-level
- * plugin that injects `tools` therefore never satisfies its own injection and
- * cordis never calls `apply` — with no diagnostic at all (it is not a skipped
- * bundle, not a "broken" plugin, and nothing is logged).
- *
- * So: inject only `commands` at the root, and register the tool per agent in an
- * `agent/created` listener — the pattern `references/practices.md` prescribes
- * ("Register per-agent behavior on agent.ctx … Wrap it in one agent.ctx.effect").
+ * 2. Injection. `@deepseek-ai/dsh-base/cordis.patch.yml` states the rule:
+ *    "Row order carries no load semantics (activation is service-availability
+ *    driven)". A bundle row whose declared `inject` can never be satisfied is
+ *    simply never applied — it is not a skipped bundle, not a "broken" plugin,
+ *    and nothing is logged. `tools` is AGENT-scoped (every shipped tool row is
+ *    nested in the agent preset's group; the root `tool-plugin-manager` row is
+ *    hard-`disabled: true`), so declaring it here could never succeed. We now
+ *    declare NO injection at all and fetch what we need through
+ *    `ctx.inject([...])`, which cannot hold the plugin back.
  * ---------------------------------------------------------------------------
  *
  * The API key is never stored in this plugin's config. The config carries only
@@ -46,10 +43,14 @@ import { requestImage, RelayError } from './lib/relay.js';
 export const name = 'dsh-image';
 
 /**
- * Root-scoped services only. `tools` is deliberately absent — see the scope
- * note above; the tool registry is obtained per agent instead.
+ * Deliberately empty.
+ *
+ * There is no service this plugin cannot work without: the command is
+ * registered when its registry appears (`ctx.inject` below) and the tool is
+ * registered per agent (`agent/created`). Declaring anything here would let a
+ * missing service silently keep the entire plugin unapplied.
  */
-export const inject = ['commands'];
+export const inject = [];
 
 /** Tunables, so users change them in `cordis.patch.yml` rather than in code. */
 export const Config = z.object({
@@ -88,6 +89,28 @@ class ImageError extends Error {
   }
 }
 
+/** Best-effort diagnostic that can never break a registration path. */
+function warn(ctx, message) {
+  try {
+    ctx.logger?.warn?.(`[dsh-image] ${message}`);
+  } catch {
+    /* logging must never fail the operation */
+  }
+}
+
+/** Read a service from a context without requiring it to expose `get`. */
+function lookup(context, serviceName) {
+  try {
+    if (context && typeof context.get === 'function') {
+      const found = context.get(serviceName, false);
+      if (found) return found;
+    }
+  } catch {
+    /* fall through to the property read */
+  }
+  return context?.[serviceName];
+}
+
 /**
  * Resolve the relay API key.
  *
@@ -113,13 +136,7 @@ async function resolveApiKey(ctx, config) {
     );
   }
 
-  let credentials;
-  try {
-    credentials = typeof ctx.get === 'function' ? ctx.get('credentials', false) : undefined;
-  } catch {
-    credentials = undefined;
-  }
-
+  const credentials = lookup(ctx, 'credentials');
   if (credentials && typeof credentials.resolve === 'function') {
     const found = await credentials.resolve(credentialRef(refName));
     if (found && typeof found.value === 'string' && found.value.trim() !== '') {
@@ -278,8 +295,44 @@ function describe(result) {
 }
 
 /**
- * Build the agent-tool definition. Kept as one factory so the per-agent
- * registration and any future caller cannot drift apart.
+ * The `/image` command definition. A factory so registration cannot drift.
+ *
+ * @param {object} ctx - plugin context.
+ * @param {object} config - merged plugin config.
+ * @returns {object} the `ctx.commands.register` argument.
+ */
+function buildCommand(ctx, config) {
+  return {
+    name: 'image',
+    description: 'Generate an image from a prompt and save it to the workspace',
+    input: { hint: '<prompt>' },
+    async handler(invocation) {
+      try {
+        const result = await generate(ctx, config, {
+          prompt: invocation?.rawInput,
+          agent: invocation?.agent,
+          signal: invocation?.signal,
+        });
+        // Command output is UI-side and never enters model history, so the
+        // markdown line is what should render the picture inline; the plain
+        // summary is the fallback that always reads correctly.
+        return {
+          kind: 'success',
+          text: `Saved ${describe(result)}\n\n![${result.prompt}](${result.relPath})`,
+        };
+      } catch (error) {
+        return {
+          kind: 'error',
+          text: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+  };
+}
+
+/**
+ * The `generate_image` tool definition. A factory so the per-agent
+ * registration cannot drift from any future caller.
  *
  * @param {object} ctx - plugin context.
  * @param {object} config - merged plugin config.
@@ -323,55 +376,31 @@ function buildTool(ctx, config) {
   });
 }
 
-/** Best-effort diagnostic that can never break a registration path. */
-function warn(ctx, message) {
-  try {
-    ctx.logger?.warn?.(`[dsh-image] ${message}`);
-  } catch {
-    /* logging must never fail the operation */
-  }
-}
-
 /**
  * Register the slash command (root scope) and the agent tool (per agent).
  *
- * @param {object} ctx - plugin context carrying the root command registry.
+ * @param {object} ctx - plugin context.
  * @param {object} [rawConfig] - the row's `config`; defaults are re-applied below.
  */
 export function apply(ctx, rawConfig) {
   const config = { ...DEFAULTS, ...(rawConfig ?? {}) };
+  warn(ctx, `applied (baseUrl=${config.baseUrl}, model=${config.model}, ref=${config.apiKeyRef})`);
 
   // ---- caller 1: the `/image` slash command (root-scoped registry) -------
-  ctx.effect(
-    () =>
-      ctx.commands.register({
-        name: 'image',
-        description: 'Generate an image from a prompt and save it to the workspace',
-        input: { hint: '<prompt>' },
-        async handler(invocation) {
-          try {
-            const result = await generate(ctx, config, {
-              prompt: invocation?.rawInput,
-              agent: invocation?.agent,
-              signal: invocation?.signal,
-            });
-            // Command output is UI-side and never enters model history, so the
-            // markdown line is what should render the picture inline; the plain
-            // summary is the fallback that always reads correctly.
-            return {
-              kind: 'success',
-              text: `Saved ${describe(result)}\n\n![${result.prompt}](${result.relPath})`,
-            };
-          } catch (error) {
-            return {
-              kind: 'error',
-              text: error instanceof Error ? error.message : String(error),
-            };
-          }
-        },
-      }),
-    'dsh-image command',
-  );
+  // Fetched via `ctx.inject` rather than declared in `inject`, so a missing
+  // command registry can never keep the whole plugin unapplied.
+  ctx.inject(['commands'], (scope) => {
+    try {
+      const commands = lookup(scope, 'commands');
+      if (!commands || typeof commands.register !== 'function') {
+        warn(ctx, 'no `commands` registry in scope; /image not registered');
+        return;
+      }
+      scope.effect(() => commands.register(buildCommand(ctx, config)), 'dsh-image command');
+    } catch (error) {
+      warn(ctx, `command registration failed: ${error?.message ?? error}`);
+    }
+  });
 
   // ---- caller 2: the `generate_image` tool, ONE PER AGENT ----------------
   // `tools` lives in the agent scope, so this cannot be done at the root: the
@@ -385,9 +414,7 @@ export function apply(ctx, rawConfig) {
         return;
       }
 
-      const tools =
-        (typeof agentCtx.get === 'function' ? agentCtx.get('tools', false) : undefined) ??
-        agentCtx.tools;
+      const tools = lookup(agentCtx, 'tools');
       if (!tools || typeof tools.register !== 'function') {
         warn(ctx, 'no `tools` registry on the agent context; tool not registered');
         return;
