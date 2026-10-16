@@ -1,13 +1,40 @@
 {
   "name": "@local/dsh-image",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "index.js",
-  "description": "Image generation for DeepSeek Harness through an OpenAI-compatible relay (ykh.ai / gpt-image-2), exposed as both a slash command and an agent tool.",
+  "description": "Image generation for DeepSeek Harness through an OpenAI-compatible relay, exposed as both a slash command and an agent tool.",
+  "license": "MIT",
+  "author": "Merlot.Qi <merlotrain.mc@gmail.com>",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek",
+    "harness",
+    "image-generation",
+    "gpt-image-2",
+    "openai"
+  ],
+  "icon": "./icon.svg",
   "exports": {
     ".": "./index.js",
-    "./package.json": "./package.json"
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "locale",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/"
   },
   "meta": {
     "title": "Image Generation (ykh.ai)",
@@ -16,6 +43,10 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
     }
   }
 }

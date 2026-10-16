@@ -1,0 +1,13 @@
+# Normalise line endings in the repo, keep them native on checkout.
+* text=auto eol=lf
+
+# Binary assets must never be line-ending converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.gif binary
+
+# Generated images are binary too, in case one is ever committed deliberately.
+images/** binary

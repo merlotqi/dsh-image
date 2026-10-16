@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Image generation">
+  <title>dsh-image</title>
+  <defs>
+    <linearGradient id="dshImageBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3d8fd6"/>
+      <stop offset="1" stop-color="#1f5f9e"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded tile -->
+  <rect width="256" height="256" rx="56" fill="url(#dshImageBg)"/>
+
+  <!-- Sun -->
+  <circle cx="90" cy="88" r="23" fill="#ffd479"/>
+
+  <!-- Two-peak range -->
+  <path d="M26 198 L104 106 L150 160 L178 128 L230 198 Z" fill="#ffffff" fill-opacity="0.95"/>
+
+  <!-- Sparkle: the "generated" half -->
+  <path d="M197 44 l7.5 19.5 L224 71 l-19.5 7.5 L197 98 l-7.5-19.5 L170 71 l19.5-7.5 Z" fill="#ffffff"/>
+</svg>

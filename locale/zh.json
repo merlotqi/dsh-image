@@ -1,0 +1,4 @@
+{
+  "title": "图像生成",
+  "description": "用 /image 命令或 generate_image 工具出图。图片存到工作区，API key 由 DSH 凭据库保管，不写进配置。"
+}

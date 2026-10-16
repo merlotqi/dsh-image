@@ -1,0 +1,4 @@
+{
+  "title": "Image Generation",
+  "description": "Generate images from /image or the generate_image tool. Saves into the workspace; the API key stays in DSH's credential store."
+}

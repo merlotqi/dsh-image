@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Generated images.
+#
+# The plugin writes to `<session workspace>/<outputDir>` — default `images/`.
+# When the session workspace happens to BE this bundle directory, output lands
+# inside the repo, so both the subdirectory and the root are ignored.
+images/
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.vscode/
+.idea/
+
+# Logs and local overrides
+*.log
+npm-debug.log*
+pnpm-debug.log*
+*.local.*
+.env
+.env.*
