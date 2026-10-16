@@ -1,5 +1,11 @@
 # dsh-image bundle: inserts the image-generation plugin into a profile's layer stack.
+#
+# Deliberately a PLAIN insert — no `config:` row here. DSH's hot-mount only
+# accepts plain inserts; a patch carrying config/expression rows is deferred to
+# the next restart ("bundle patch 含配置/表达式，热挂载仅支持纯 insert").
+# The plugin re-applies its own defaults in code, so nothing is lost, and
+# tunables belong in the profile's own cordis.patch.yml anyway — that layer is
+# the user's and survives upgrades.
 - insert:
     - id: dsh-image
       name: '@local/dsh-image'
-      config: {}

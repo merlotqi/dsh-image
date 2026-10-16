@@ -2,8 +2,31 @@
  * dsh-image — image generation for DeepSeek Harness through a relay.
  *
  * One operation, two callers (DSH's own guidance for "user actions and agent
- * tools"): the `generate_image` agent tool and the `/image` slash command both
+ * tools"): the `/image` slash command and the `generate_image` agent tool both
  * call `generate()` below. There is deliberately no second copy of the logic.
+ *
+ * ---------------------------------------------------------------------------
+ * SCOPE NOTE — this file used to be silently dead because the two services live
+ * in different scopes, so it is worth stating plainly:
+ *
+ *   `commands` is ROOT-scoped. `@deepseek-ai/dsh-command-compact` sits at the
+ *   profile root and injects `["commands", "compaction"]`.
+ *
+ *   `tools` is AGENT-scoped. Every shipped tool row (`dsh-tool-present`,
+ *   `dsh-tool-ask-user`, …) is nested inside the agent preset's group, and the
+ *   root-level `tool-plugin-manager` row is hard-`disabled: true` while its
+ *   agent-group twin is the enabled one.
+ *
+ * `@deepseek-ai/dsh-base/cordis.patch.yml` states the rule: "Row order carries
+ * no load semantics (activation is service-availability driven)". A root-level
+ * plugin that injects `tools` therefore never satisfies its own injection and
+ * cordis never calls `apply` — with no diagnostic at all (it is not a skipped
+ * bundle, not a "broken" plugin, and nothing is logged).
+ *
+ * So: inject only `commands` at the root, and register the tool per agent in an
+ * `agent/created` listener — the pattern `references/practices.md` prescribes
+ * ("Register per-agent behavior on agent.ctx … Wrap it in one agent.ctx.effect").
+ * ---------------------------------------------------------------------------
  *
  * The API key is never stored in this plugin's config. The config carries only
  * the *name* of a credential reference; the value is resolved per operation
@@ -23,12 +46,10 @@ import { requestImage, RelayError } from './lib/relay.js';
 export const name = 'dsh-image';
 
 /**
- * Services this plugin registers into. `credentials` is deliberately NOT
- * injected: it is read opportunistically in `resolveApiKey()` so the plugin
- * still activates (with a clear error) in a profile that has no credential
- * store, instead of staying inactive with no explanation.
+ * Root-scoped services only. `tools` is deliberately absent — see the scope
+ * note above; the tool registry is obtained per agent instead.
  */
-export const inject = ['tools', 'commands'];
+export const inject = ['commands'];
 
 /** Tunables, so users change them in `cordis.patch.yml` rather than in code. */
 export const Config = z.object({
@@ -257,58 +278,70 @@ function describe(result) {
 }
 
 /**
- * Register the agent tool and the slash command.
+ * Build the agent-tool definition. Kept as one factory so the per-agent
+ * registration and any future caller cannot drift apart.
  *
- * @param {object} ctx - plugin context carrying the tools and commands registries.
+ * @param {object} ctx - plugin context.
+ * @param {object} config - merged plugin config.
+ * @returns {object} the `defineTool` definition.
+ */
+function buildTool(ctx, config) {
+  return defineTool({
+    name: 'generate_image',
+    description:
+      'Generate an image from a text prompt and save it into the workspace. ' +
+      'Returns `path` (absolute) and `relPath` (relative to the session workspace). ' +
+      'Show the result by embedding relPath as a markdown image — ![description](relPath) — ' +
+      'or by passing the absolute path to present.',
+    parameters: {
+      prompt: {
+        type: 'string',
+        required: true,
+        description: 'What to draw. Concrete, specific descriptions work best.',
+      },
+      size: {
+        type: 'string',
+        description: `Image size such as 1024x1024 or 1536x1024. Defaults to ${config.defaultSize}.`,
+      },
+    },
+    async execute(args, exec) {
+      const result = await generate(ctx, config, {
+        prompt: args?.prompt,
+        size: args?.size,
+        agent: exec?.agent,
+        signal: exec?.signal,
+      });
+      return {
+        path: result.path,
+        relPath: result.relPath,
+        bytes: result.bytes,
+        model: result.model,
+        size: result.size,
+        shape: result.shape,
+      };
+    },
+  });
+}
+
+/** Best-effort diagnostic that can never break a registration path. */
+function warn(ctx, message) {
+  try {
+    ctx.logger?.warn?.(`[dsh-image] ${message}`);
+  } catch {
+    /* logging must never fail the operation */
+  }
+}
+
+/**
+ * Register the slash command (root scope) and the agent tool (per agent).
+ *
+ * @param {object} ctx - plugin context carrying the root command registry.
  * @param {object} [rawConfig] - the row's `config`; defaults are re-applied below.
  */
 export function apply(ctx, rawConfig) {
   const config = { ...DEFAULTS, ...(rawConfig ?? {}) };
 
-  // ---- caller 1: the agent tool -------------------------------------------
-  ctx.effect(
-    () =>
-      ctx.tools.register(
-        defineTool({
-          name: 'generate_image',
-          description:
-            'Generate an image from a text prompt and save it into the workspace. ' +
-            'Returns `path` (absolute) and `relPath` (relative to the session workspace). ' +
-            'Show the result by embedding relPath as a markdown image — ![description](relPath) — ' +
-            'or by passing the absolute path to present.',
-          parameters: {
-            prompt: {
-              type: 'string',
-              required: true,
-              description: 'What to draw. Concrete, specific descriptions work best.',
-            },
-            size: {
-              type: 'string',
-              description: `Image size such as 1024x1024 or 1536x1024. Defaults to ${config.defaultSize}.`,
-            },
-          },
-          async execute(args, exec) {
-            const result = await generate(ctx, config, {
-              prompt: args?.prompt,
-              size: args?.size,
-              agent: exec?.agent,
-              signal: exec?.signal,
-            });
-            return {
-              path: result.path,
-              relPath: result.relPath,
-              bytes: result.bytes,
-              model: result.model,
-              size: result.size,
-              shape: result.shape,
-            };
-          },
-        }),
-      ),
-    'dsh-image tool',
-  );
-
-  // ---- caller 2: the /image slash command ---------------------------------
+  // ---- caller 1: the `/image` slash command (root-scoped registry) -------
   ctx.effect(
     () =>
       ctx.commands.register({
@@ -339,4 +372,31 @@ export function apply(ctx, rawConfig) {
       }),
     'dsh-image command',
   );
+
+  // ---- caller 2: the `generate_image` tool, ONE PER AGENT ----------------
+  // `tools` lives in the agent scope, so this cannot be done at the root: the
+  // agent context is the only place that registry exists. Registering inside a
+  // single `agent.ctx.effect()` also ties disposal to the agent automatically.
+  ctx.on('agent/created', ({ agent }) => {
+    try {
+      const agentCtx = agent?.ctx;
+      if (!agentCtx || typeof agentCtx.effect !== 'function') {
+        warn(ctx, 'agent/created carried no agent ctx; tool not registered');
+        return;
+      }
+
+      const tools =
+        (typeof agentCtx.get === 'function' ? agentCtx.get('tools', false) : undefined) ??
+        agentCtx.tools;
+      if (!tools || typeof tools.register !== 'function') {
+        warn(ctx, 'no `tools` registry on the agent context; tool not registered');
+        return;
+      }
+
+      agentCtx.effect(() => tools.register(buildTool(ctx, config)), 'dsh-image tool');
+    } catch (error) {
+      // Never let the tool half take down the command half.
+      warn(ctx, `tool registration failed: ${error?.message ?? error}`);
+    }
+  });
 }
